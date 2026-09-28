@@ -1,0 +1,1005 @@
+name: LaorORG
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  secure-LaorORG:
+
+    runs-on: windows-latest
+
+    # This keeps the current GitHub-hosted VM alive.
+    # It does NOT make the GitHub VM permanent.
+    timeout-minutes: 350
+
+    permissions:
+      contents: read
+
+    steps:
+
+      # ============================================================
+      # 1. SHOW WINDOWS INFORMATION
+      # ============================================================
+
+      - name: Show Windows Information
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                 LaorORG WINDOWS"
+          Write-Host "======================================================"
+
+          Write-Host ""
+          Write-Host "Computer:"
+          Write-Host $env:COMPUTERNAME
+
+          Write-Host ""
+          Write-Host "Current user:"
+          whoami
+
+          Write-Host ""
+          Write-Host "Windows:"
+          (Get-CimInstance Win32_OperatingSystem).Caption
+
+          Write-Host ""
+          Write-Host "Architecture:"
+          Write-Host $env:PROCESSOR_ARCHITECTURE
+
+
+      # ============================================================
+      # 2. CONFIGURE runneradmin
+      # ============================================================
+
+      - name: Configure runneradmin
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $username = "runneradmin"
+          $password = "Laor@001"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                 RDP USER"
+          Write-Host "======================================================"
+
+          # Make sure 8-character password is accepted.
+          net accounts /minpwlen:8
+
+          $user = Get-LocalUser `
+            -Name $username `
+            -ErrorAction SilentlyContinue
+
+          if (-not $user) {
+
+              Write-Host "Creating runneradmin..."
+
+              $securePassword = ConvertTo-SecureString `
+                $password `
+                -AsPlainText `
+                -Force
+
+              New-LocalUser `
+                -Name $username `
+                -Password $securePassword `
+                -FullName "LaorORG Remote User" `
+                -Description "LaorORG RDP user"
+
+          }
+          else {
+
+              Write-Host "runneradmin already exists."
+
+              $securePassword = ConvertTo-SecureString `
+                $password `
+                -AsPlainText `
+                -Force
+
+              Set-LocalUser `
+                -Name $username `
+                -Password $securePassword
+          }
+
+          Enable-LocalUser `
+            -Name $username
+
+          Set-LocalUser `
+            -Name $username `
+            -PasswordNeverExpires $true
+
+          # Add to Remote Desktop Users.
+
+          $member = Get-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.Name -match "\\$username$"
+            }
+
+          if (-not $member) {
+
+              Add-LocalGroupMember `
+                -Group "Remote Desktop Users" `
+                -Member $username
+          }
+
+          Write-Host ""
+          Write-Host "Username:"
+          Write-Host "runneradmin"
+
+          Write-Host ""
+          Write-Host "RDP user configured."
+
+
+      # ============================================================
+      # 3. CAMBODIA TIMEZONE
+      # ============================================================
+
+      - name: Set Cambodia Timezone
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "              CAMBODIA TIMEZONE"
+          Write-Host "======================================================"
+
+          # Cambodia / GMT+7
+          tzutil /s "SE Asia Standard Time"
+
+          Write-Host ""
+          Write-Host "Timezone:"
+          tzutil /g
+
+          Write-Host ""
+          Write-Host "Current time:"
+          Get-Date
+
+
+      # ============================================================
+      # 4. CONFIGURE WINDOWS RDP
+      # ============================================================
+
+      - name: Configure Remote Desktop
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "               WINDOWS RDP"
+          Write-Host "======================================================"
+
+          # Enable RDP.
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0 `
+            -Force
+
+          # Keep Network Level Authentication enabled.
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1 `
+            -Force
+
+          # Negotiate security.
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "SecurityLayer" `
+            -Value 1 `
+            -Force
+
+          # Start RDP automatically.
+
+          Set-Service `
+            -Name "TermService" `
+            -StartupType Automatic
+
+          Restart-Service `
+            -Name "TermService" `
+            -Force
+
+          Write-Host ""
+          Write-Host "RDP service:"
+          (Get-Service TermService).Status
+
+
+      # ============================================================
+      # 5. DOWNLOAD TAILSCALE
+      # ============================================================
+
+      - name: Download Tailscale
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "              DOWNLOAD TAILSCALE"
+          Write-Host "======================================================"
+
+          $version = "1.102.4"
+
+          $url = "https://dl.tailscale.com/stable/tailscale-setup-$version-amd64.msi"
+
+          $installer = Join-Path `
+            $env:TEMP `
+            "tailscale-$version-amd64.msi"
+
+          Write-Host ""
+          Write-Host "Downloading Tailscale $version..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer `
+            -UseBasicParsing
+
+          if (-not (Test-Path $installer)) {
+
+              throw "Tailscale installer was not downloaded."
+          }
+
+          Write-Host ""
+          Write-Host "Downloaded:"
+          Write-Host $installer
+
+
+      # ============================================================
+      # 6. INSTALL TAILSCALE
+      # ============================================================
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "               INSTALL TAILSCALE"
+          Write-Host "======================================================"
+
+          $version = "1.102.4"
+
+          $installer = Join-Path `
+            $env:TEMP `
+            "tailscale-$version-amd64.msi"
+
+          $process = Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList @(
+              "/i",
+              "`"$installer`"",
+              "/quiet",
+              "/norestart"
+            ) `
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -ne 0) {
+
+              throw "Tailscale installation failed: $($process.ExitCode)"
+          }
+
+          Start-Sleep -Seconds 5
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+
+              throw "Tailscale executable not found."
+          }
+
+          # Start automatically after Windows boot.
+
+          Set-Service `
+            -Name "Tailscale" `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name "Tailscale" `
+            -ErrorAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "Tailscale:"
+          & $tailscale version
+
+
+      # ============================================================
+      # 7. CONNECT TAILSCALE
+      # ============================================================
+
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "               CONNECT TAILSCALE"
+          Write-Host "======================================================"
+
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+
+              throw "TAILSCALE_AUTH_KEY GitHub Secret is missing."
+          }
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          & $tailscale up `
+            --auth-key="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="LaorORG-GitHub-Windows" `
+            --unattended=true `
+            --accept-dns=true
+
+          if ($LASTEXITCODE -ne 0) {
+
+              throw "Tailscale connection failed."
+          }
+
+          Write-Host ""
+          Write-Host "Tailscale connected."
+
+
+      # ============================================================
+      # 8. GET TAILSCALE IP
+      # ============================================================
+
+      - name: Get Tailscale IPv4
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                TAILSCALE IP"
+          Write-Host "======================================================"
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          $tsIP = $null
+
+          for ($i = 1; $i -le 30; $i++) {
+
+              $result = & $tailscale ip -4 2>$null
+
+              if ($result) {
+
+                  $candidate = (
+                    $result |
+                    Select-Object -First 1
+                  ).Trim()
+
+                  if ($candidate -match '^100\.') {
+
+                      $tsIP = $candidate
+                      break
+                  }
+              }
+
+              Write-Host "Waiting for Tailscale IP... $i/30"
+
+              Start-Sleep -Seconds 2
+          }
+
+          if (-not $tsIP) {
+
+              & $tailscale status
+
+              throw "Tailscale IPv4 was not assigned."
+          }
+
+          "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "Tailscale IPv4:"
+          Write-Host $tsIP
+
+
+      # ============================================================
+      # 9. DOWNLOAD AND INSTALL ANYDESK
+      # ============================================================
+
+      - name: Install AnyDesk
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                 INSTALL ANYDESK"
+          Write-Host "======================================================"
+
+          $download = "$env:TEMP\AnyDesk.exe"
+
+          $url = "https://download.anydesk.com/AnyDesk.exe"
+
+          Write-Host ""
+          Write-Host "Downloading AnyDesk..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $download `
+            -UseBasicParsing
+
+          if (-not (Test-Path $download)) {
+
+              throw "AnyDesk download failed."
+          }
+
+          $installDir = "C:\Program Files (x86)\AnyDesk"
+
+          Write-Host ""
+          Write-Host "Installing AnyDesk..."
+
+          & $download `
+            --install $installDir `
+            --start-with-win `
+            --silent
+
+          Start-Sleep -Seconds 10
+
+          $anydesk = "$installDir\AnyDesk.exe"
+
+          if (-not (Test-Path $anydesk)) {
+
+              throw "Installed AnyDesk.exe was not found."
+          }
+
+          Write-Host ""
+          Write-Host "AnyDesk installed."
+
+          Write-Host ""
+          Write-Host "Version:"
+
+          & $anydesk --version
+
+
+
+      # ============================================================
+      # 10. START ANYDESK SERVICE
+      # ============================================================
+
+      - name: Start AnyDesk Service
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "               ANYDESK SERVICE"
+          Write-Host "======================================================"
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+          if (-not (Test-Path $anydesk)) {
+              throw "AnyDesk.exe not found."
+          }
+          # Start AnyDesk background service.
+          & $anydesk --start
+          Start-Sleep -Seconds 8
+          # Find AnyDesk service.
+          $services = Get-Service |
+            Where-Object {
+              $_.Name -match "AnyDesk" -or
+              $_.DisplayName -match "AnyDesk"
+            }
+          if (-not $services) {
+              throw "AnyDesk service was not found."
+          }
+          foreach ($service in $services) {
+              Write-Host ""
+              Write-Host "Service:"
+              Write-Host $service.Name
+              try {
+                  Set-Service `
+                    -Name $service.Name `
+                    -StartupType Automatic
+              }
+              catch {
+                  Write-Host "Could not set startup type."
+              }
+              if ($service.Status -ne "Running") {
+                  try {
+                      Start-Service `
+                        -Name $service.Name `
+                        -ErrorAction SilentlyContinue
+                  }
+                  catch {
+                      Write-Host "Service is already starting."
+                  }
+              }
+          }
+          Write-Host ""
+          Write-Host "AnyDesk service configured for automatic startup."
+
+
+      # ============================================================
+      # 11. CONFIGURE ANYDESK UNATTENDED ACCESS
+      # ============================================================
+
+      - name: Configure AnyDesk Unattended Access
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "          ANYDESK UNATTENDED ACCESS"
+          Write-Host "======================================================"
+
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+
+          $password = "Laor@001"
+
+          if (-not (Test-Path $anydesk)) {
+
+              throw "AnyDesk.exe was not found."
+          }
+
+          Write-Host ""
+          Write-Host "AnyDesk version:"
+
+          & $anydesk --version
+
+          Write-Host ""
+          Write-Host "Restarting AnyDesk service..."
+
+          & $anydesk --restart-service
+
+          Start-Sleep -Seconds 5
+
+          # --------------------------------------------------------
+          # Use AnyDesk's documented password input method.
+          # _unattended_access is the built-in default profile.
+          # --------------------------------------------------------
+
+          Write-Host ""
+          Write-Host "Setting Unattended Access password..."
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+
+          $psi.FileName = $anydesk
+          $psi.Arguments = "--set-password _unattended_access"
+
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.CreateNoWindow = $true
+
+          $process = New-Object System.Diagnostics.Process
+
+          $process.StartInfo = $psi
+
+          [void]$process.Start()
+
+          $process.StandardInput.WriteLine($password)
+          $process.StandardInput.Close()
+
+          $stdout = $process.StandardOutput.ReadToEnd()
+          $stderr = $process.StandardError.ReadToEnd()
+
+          $process.WaitForExit()
+
+          Write-Host ""
+          Write-Host "AnyDesk command exit code:"
+          Write-Host $process.ExitCode
+
+          if ($stdout) {
+
+              Write-Host ""
+              Write-Host "AnyDesk output:"
+              Write-Host $stdout
+          }
+
+          if ($stderr) {
+
+              Write-Host ""
+              Write-Host "AnyDesk error output:"
+              Write-Host $stderr
+          }
+
+          if ($process.ExitCode -ne 0) {
+
+              throw "Unable to configure AnyDesk Unattended Access password."
+          }
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "       ANYDESK UNATTENDED ACCESS ENABLED"
+          Write-Host "======================================================"
+
+
+      # ============================================================
+      # 12. GET ANYDESK ID
+      # ============================================================
+
+      - name: Get AnyDesk ID
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                  ANYDESK ID"
+          Write-Host "======================================================"
+
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+
+          Start-Sleep -Seconds 5
+
+          # AnyDesk writes the ID through the CLI.
+          $id = & $anydesk --get-id 2>&1 |
+            Out-String
+
+          $id = $id.Trim()
+
+          if ([string]::IsNullOrWhiteSpace($id)) {
+
+              Start-Sleep -Seconds 5
+
+              $id = & $anydesk --get-id 2>&1 |
+                Out-String
+
+              $id = $id.Trim()
+          }
+
+          if ([string]::IsNullOrWhiteSpace($id)) {
+
+              throw "Could not obtain AnyDesk ID."
+          }
+
+          "ANYDESK_ID=$id" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "AnyDesk ID:"
+          Write-Host $id
+
+          Write-Host ""
+          Write-Host "AnyDesk status:"
+
+          & $anydesk --get-status
+
+
+      # ============================================================
+      # 13. RDP FIREWALL - TAILSCALE ONLY
+      # ============================================================
+
+      - name: Secure RDP Firewall
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "              RDP FIREWALL"
+          Write-Host "======================================================"
+
+          # Disable broad RDP rules.
+
+          Disable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          # Remove previous rule.
+
+          Remove-NetFirewallRule `
+            -DisplayName "LaorORG RDP - Tailscale Only" `
+            -ErrorAction SilentlyContinue
+
+          # Allow RDP only through Tailscale.
+
+          New-NetFirewallRule `
+            -DisplayName "LaorORG RDP - Tailscale Only" `
+            -Direction Inbound `
+            -Action Allow `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -RemoteAddress "100.64.0.0/10" `
+            -Profile Any
+
+          Write-Host ""
+          Write-Host "RDP is allowed from Tailscale only."
+
+
+      # ============================================================
+      # 14. VERIFY TAILSCALE
+      # ============================================================
+
+      - name: Verify Tailscale
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "              TAILSCALE STATUS"
+          Write-Host "======================================================"
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          Write-Host ""
+          Write-Host "Version:"
+          & $tailscale version
+
+          Write-Host ""
+          Write-Host "IPv4:"
+          & $tailscale ip -4
+
+          Write-Host ""
+          Write-Host "Status:"
+          & $tailscale status
+
+
+      # ============================================================
+      # 15. VERIFY RDP
+      # ============================================================
+
+      - name: Verify RDP
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                  VERIFY RDP"
+          Write-Host "======================================================"
+
+          $service = Get-Service `
+            -Name "TermService"
+
+          Write-Host ""
+          Write-Host "TermService:"
+          Write-Host $service.Status
+
+          if ($service.Status -ne "Running") {
+
+              throw "RDP service is not running."
+          }
+
+          $listener = Get-NetTCPConnection `
+            -LocalPort 3389 `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if (-not $listener) {
+
+              throw "RDP is not listening on TCP 3389."
+          }
+
+          Write-Host ""
+          Write-Host "RDP TCP 3389: LISTENING"
+
+          $test = Test-NetConnection `
+            -ComputerName "127.0.0.1" `
+            -Port 3389 `
+            -WarningAction SilentlyContinue
+
+          Write-Host ""
+          Write-Host "Local RDP test:"
+          Write-Host $test.TcpTestSucceeded
+
+          if (-not $test.TcpTestSucceeded) {
+
+              throw "RDP local test failed."
+          }
+
+
+      # ============================================================
+      # 16. VERIFY ANYDESK
+      # ============================================================
+
+      - name: Verify AnyDesk
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "                VERIFY ANYDESK"
+          Write-Host "======================================================"
+
+          $anydesk = "C:\Program Files (x86)\AnyDesk\AnyDesk.exe"
+
+          if (-not (Test-Path $anydesk)) {
+
+              throw "AnyDesk.exe not found."
+          }
+
+          Write-Host ""
+          Write-Host "AnyDesk version:"
+          & $anydesk --version
+
+          Write-Host ""
+          Write-Host "AnyDesk ID:"
+          Write-Host $env:ANYDESK_ID
+
+          Write-Host ""
+          Write-Host "AnyDesk status:"
+          & $anydesk --get-status
+
+          Write-Host ""
+          Write-Host "AnyDesk services:"
+
+          Get-Service |
+            Where-Object {
+              $_.Name -match "AnyDesk" -or
+              $_.DisplayName -match "AnyDesk"
+            } |
+            Select-Object Name, DisplayName, Status, StartType
+
+
+      # ============================================================
+      # 17. DISPLAY CONNECTION INFORMATION
+      # ============================================================
+
+      - name: Display LaorORG Information
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "              LaorORG REMOTE ACCESS"
+          Write-Host "======================================================"
+
+          Write-Host ""
+          Write-Host "Server:"
+          Write-Host "  LaorORG"
+
+          Write-Host ""
+          Write-Host "Operating System:"
+          Write-Host "  Windows Server / windows-2022 runner"
+
+          Write-Host ""
+          Write-Host "Timezone:"
+          Write-Host "  Cambodia GMT+7"
+
+          Write-Host ""
+          Write-Host "Tailscale hostname:"
+          Write-Host "  LaorORG-GitHub-Windows"
+
+          Write-Host ""
+          Write-Host "Tailscale IPv4:"
+          Write-Host "  $env:TAILSCALE_IP"
+
+          Write-Host ""
+          Write-Host "RDP:"
+          Write-Host "  $env:TAILSCALE_IP`:3389"
+
+          Write-Host ""
+          Write-Host "RDP username:"
+          Write-Host "  runneradmin"
+
+          Write-Host ""
+          Write-Host "RDP password:"
+          Write-Host "  Laor@001"
+
+          Write-Host ""
+          Write-Host "AnyDesk ID:"
+          Write-Host "  $env:ANYDESK_ID"
+
+          Write-Host ""
+          Write-Host "AnyDesk password:"
+          Write-Host "  Laor@001"
+
+          Write-Host ""
+          Write-Host "AnyDesk:"
+          Write-Host "  Installed / Service Mode"
+
+          Write-Host ""
+          Write-Host "======================================================"
+
+
+      # ============================================================
+      # 18. KEEP CURRENT GITHUB VM ONLINE
+      # ============================================================
+
+      - name: Keep LaorORG Online
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "======================================================"
+          Write-Host "        LaorORG WINDOWS VM IS ONLINE"
+          Write-Host "======================================================"
+
+          Write-Host ""
+          Write-Host "Tailscale IP:"
+          Write-Host $env:TAILSCALE_IP
+
+          Write-Host ""
+          Write-Host "AnyDesk ID:"
+          Write-Host $env:ANYDESK_ID
+
+          Write-Host ""
+          Write-Host "RDP:"
+          Write-Host "$env:TAILSCALE_IP`:3389"
+
+          Write-Host ""
+          Write-Host "Keeping GitHub Actions job alive..."
+
+          while ($true) {
+
+              $time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+              Write-Host ""
+              Write-Host "[$time] LaorORG Windows VM is ONLINE"
+
+              # ----------------------------------------------------
+              # Tailscale check
+              # ----------------------------------------------------
+
+              $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+              if (Test-Path $tailscale) {
+
+                  $ip = & $tailscale ip -4 2>$null |
+                    Select-Object -First 1
+
+                  if ($ip) {
+
+                      Write-Host "[$time] Tailscale IP: $ip"
+
+                  }
+                  else {
+
+                      Write-Host "[$time] WARNING: Tailscale IP unavailable"
+                  }
+              }
+
+              # ----------------------------------------------------
+              # RDP check
+              # ----------------------------------------------------
+
+              $rdp = Get-Service `
+                -Name "TermService" `
+                -ErrorAction SilentlyContinue
+
+              if ($rdp) {
+
+                  Write-Host "[$time] RDP: $($rdp.Status)"
+              }
+
+              # ----------------------------------------------------
+              # AnyDesk check
+              # ----------------------------------------------------
+
+              $anydeskServices = Get-Service |
+                Where-Object {
+                  $_.Name -match "AnyDesk" -or
+                  $_.DisplayName -match "AnyDesk"
+                }
+
+              if ($anydeskServices) {
+
+                  foreach ($service in $anydeskServices) {
+
+                      Write-Host "[$time] AnyDesk $($service.Name): $($service.Status)"
+                  }
+              }
+
+              Start-Sleep -Seconds 300
+          }
